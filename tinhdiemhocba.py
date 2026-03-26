@@ -1,93 +1,89 @@
 import streamlit as st
+import cv2
+import pytesseract
 import pandas as pd
+import numpy as np
+import re
 import io
 
 st.set_page_config(page_title="Tính điểm học bạ TBD", layout="wide")
+st.title("🎓 Công cụ Tính điểm Xét tuyển TBD")
 
-# Giao diện Header của trường
-st.image("https://tbd.edu.vn/wp-content/uploads/2023/04/Logo-TBD-Final-No-Slogan.png", width=200)
-st.title("🎓 Hệ thống Tính điểm & Quản lý Xét tuyển TBD")
+# --- HÀM XỬ LÝ TỰ ĐỘNG QUÉT ĐIỂM ---
+def auto_scan_scores(image):
+    # Tiền xử lý ảnh để máy đọc số tốt hơn
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    # Tăng tương phản và khử nhiễu
+    thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 15)
+    
+    # Quét số với bộ lọc chỉ lấy chữ số và dấu ngăn cách
+    custom_config = r'--psm 11 -c tessedit_char_whitelist=0123456789.,'
+    raw_text = pytesseract.image_to_string(thresh, config=custom_config)
+    
+    # Tìm các số có định dạng điểm (ví dụ: 7.5, 8.0, 10)
+    found_nums = re.findall(r'\d[.,]\d|\d{1,2}', raw_text)
+    
+    scores = []
+    for n in found_nums:
+        clean_n = n.replace(',', '.')
+        try:
+            val = float(clean_n)
+            # Lọc lấy các giá trị thực tế của điểm môn học
+            if 4.0 <= val <= 10.0:
+                scores.append(val)
+        except:
+            continue
+    return scores
 
-# --- PHẦN 1: CÀI ĐẶT ---
-st.sidebar.header("⚙️ Cấu hình Xét tuyển")
-diem_san = st.sidebar.number_input("Điểm sàn trúng tuyển", value=18.0, step=0.5)
+# --- GIAO DIỆN CHÍNH ---
+tab1, tab2 = st.tabs(["📸 Tự động từ Ảnh học bạ", "⌨️ Nhập điểm từ Tin nhắn"])
 
-# Khởi tạo danh sách lưu trữ trong phiên làm việc
-if 'ds_xet_tuyen' not in st.session_state:
-    st.session_state.ds_xet_tuyen = []
-
-# --- PHẦN 2: NHẬP LIỆU ---
-tab1, tab2 = st.tabs(["⌨️ Nhập tay nhanh", "📸 Soi ảnh học bạ"])
-
+# --- TAB 1: TỰ ĐỘNG ---
 with tab1:
-    st.info("Dành cho trường hợp thí sinh nhắn tin điểm qua Zalo/Messenger.")
-    with st.form("form_nhap_tay"):
-        ten_ts = st.text_input("Họ và tên thí sinh")
-        sdt_ts = st.text_input("Số điện thoại")
+    st.header("Quét ảnh tự động")
+    file_up = st.file_uploader("Tải ảnh học bạ (Chụp rõ phần bảng điểm)", type=["jpg", "png", "jpeg"], key="auto")
+    
+    if file_up:
+        file_bytes = np.asarray(bytearray(file_up.read()), dtype=np.uint8)
+        img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        st.image(img, width=400, caption="Ảnh đã tải lên")
         
-        c1, c2, c3 = st.columns(3)
-        with c1: m1 = st.number_input("Điểm Môn 1", 0.0, 10.0, 0.0)
-        with c2: m2 = st.number_input("Điểm Môn 2", 0.0, 10.0, 0.0)
-        with c3: m3 = st.number_input("Điểm Môn 3", 0.0, 10.0, 0.0)
-        
-        diem_ut = st.number_input("Điểm ưu tiên (khu vực/đối tượng)", 0.0, 2.0, 0.0, 0.25)
-        btn_tinh = st.form_submit_button("➕ Tính điểm & Thêm vào danh sách")
-        
-        if btn_tinh:
-            tong = m1 + m2 + m3 + diem_ut
-            status = "✅ Đạt" if tong >= diem_san else "❌ Chưa đạt"
-            new_entry = {
-                "Họ Tên": ten_ts, "SĐT": sdt_ts, 
-                "Môn 1": m1, "Môn 2": m2, "Môn 3": m3, 
-                "Ưu tiên": diem_ut, "Tổng điểm": round(tong, 2), "Trạng thái": status
-            }
-            st.session_state.ds_xet_tuyen.append(new_entry)
-            st.success(f"Đã thêm thí sinh {ten_ts} với tổng điểm {tong}")
+        if st.button("🚀 Bắt đầu tính điểm tự động"):
+            with st.spinner("Đang phân tích bảng điểm..."):
+                all_found = auto_scan_scores(img)
+                if len(all_found) >= 3:
+                    # Lấy 3 con số đầu tiên máy tìm thấy (thường là Toán - Lý - Hóa hoặc các môn chính)
+                    d1, d2, d3 = all_found[0], all_found[1], all_found[2]
+                    tong = d1 + d2 + d3
+                    
+                    st.success(f"Kết quả dự kiến: {d1} + {d2} + {d3} = {round(tong, 2)}")
+                    st.metric("TỔNG ĐIỂM", round(tong, 2))
+                    st.write("Các điểm khác máy tìm thấy:", all_found[3:8])
+                else:
+                    st.error("Máy không tìm đủ 3 đầu điểm. Hãy chụp ảnh gần hơn vào bảng điểm!")
 
+# --- TAB 2: NHẬP TAY ---
 with tab2:
-    st.info("Tải ảnh học bạ lên để vừa nhìn vừa nhập cho chuẩn.")
-    up_file = st.file_uploader("Tải ảnh học bạ...", type=["jpg", "png", "jpeg"])
-    if up_file:
-        col_img, col_input = st.columns([1, 1])
-        with col_img:
-            st.image(up_file, caption="Ảnh học bạ đối chiếu", use_container_width=True)
-        with col_input:
-            st.warning("Nhìn ảnh bên trái và nhập số vào đây:")
-            # Tái sử dụng logic nhập liệu ở đây để lưu vào cùng danh sách
-            t_img = st.text_input("Họ tên (từ ảnh)")
-            s_img = st.text_input("SĐT (từ ảnh)")
-            d1 = st.number_input("Môn 1 ", 0.0, 10.0, 0.0, key="d1")
-            d2 = st.number_input("Môn 2 ", 0.0, 10.0, 0.0, key="d2")
-            d3 = st.number_input("Môn 3 ", 0.0, 10.0, 0.0, key="d3")
-            if st.button("Lưu từ ảnh"):
-                t_tong = d1 + d2 + d3
-                st.session_state.ds_xet_tuyen.append({
-                    "Họ Tên": t_img, "SĐT": s_img, "Môn 1": d1, "Môn 2": d2, "Môn 3": d3, 
-                    "Ưu tiên": 0, "Tổng điểm": round(t_tong, 2), 
-                    "Trạng thái": "✅ Đạt" if t_tong >= diem_san else "❌ Chưa đạt"
-                })
-
-# --- PHẦN 3: HIỂN THỊ & XUẤT FILE ---
-if st.session_state.ds_xet_tuyen:
-    st.markdown("---")
-    st.subheader("📊 Danh sách thí sinh đã tính điểm")
-    df = pd.DataFrame(st.session_state.ds_xet_tuyen)
+    st.header("Nhập điểm thủ công")
+    st.info("Nhìn tin nhắn Zalo và gõ nhanh vào đây")
     
-    # Hiển thị bảng có màu sắc phân biệt
-    st.dataframe(df.style.applymap(lambda x: 'color: green' if x == '✅ Đạt' else ('color: red' if x == '❌ Chưa đạt' else ''), subset=['Trạng thái']))
-
-    # Xuất Excel
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False)
-    
-    st.download_button(
-        label="📥 Tải File Excel Tổng Hợp Thí Sinh",
-        data=buffer.getvalue(),
-        file_name="xet_tuyen_TBD.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-    
-    if st.button("🗑️ Xóa danh sách"):
-        st.session_state.ds_xet_tuyen = []
-        st.rerun()
+    with st.form("manual_form"):
+        ten = st.text_input("Tên thí sinh (không bắt buộc)")
+        c1, c2, c3 = st.columns(3)
+        with c1: m1 = st.number_input("Điểm Môn 1", 0.0, 10.0, 0.0, step=0.1)
+        with c2: m2 = st.number_input("Điểm Môn 2", 0.0, 10.0, 0.0, step=0.1)
+        with c3: m3 = st.number_input("Điểm Môn 3", 0.0, 10.0, 0.0, step=0.1)
+        
+        bonus = st.number_input("Điểm ưu tiên", 0.0, 2.0, 0.0, 0.25)
+        
+        submit = st.form_submit_button("Tính tổng ngay")
+        
+        if submit:
+            tong_nhap = m1 + m2 + m3 + bonus
+            st.write(f"### Thí sinh: {ten}")
+            st.header(f"Tổng điểm: {round(tong_nhap, 2)}")
+            if tong_nhap >= 18.0:
+                st.balloons()
+                st.success("Đạt ngưỡng xét tuyển!")
+            else:
+                st.warning("Dưới ngưỡng xét tuyển 18.0")
